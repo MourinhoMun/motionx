@@ -117,7 +117,7 @@ async def generate_video(
     image: UploadFile = File(...),
     prompt: str = Form(...),
     duration: int = Form(...),
-    actions: str = Form(...),
+    actions: str = Form(default=""),
     aspect_ratio: str = Form("16:9"),
 ):
     token = request.headers.get("Authorization")
