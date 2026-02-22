@@ -170,6 +170,65 @@ const ACTIONS_DATA = {
   ],
 };
 
+// ── Per-action detailed descriptions for Veo3 prompt ──────────────────────────
+const ACTION_DESCRIPTIONS = {
+  // Head
+  h1: { subject: "slowly and naturally tilts their head to the left, a gentle lean of about 15 degrees, held with relaxed ease" },
+  h2: { subject: "gently tilts their head to the right, a soft natural lean of about 15 degrees, as if listening or thinking" },
+  h3: { subject: "lifts their gaze upward, raising their chin slightly with a calm and confident presence" },
+  h4: { subject: "lowers their head gently, tilting their chin downward in a shy, reflective manner" },
+  h5: { subject: "performs one or two slow, deliberate nods, as if in quiet agreement" },
+  h6: { subject: "performs a subtle slow side-to-side head shake, as if gently expressing uncertainty" },
+  h7: { subject: "turns their head to the left, rotating about 35 degrees, glancing naturally off to the side" },
+  h8: { subject: "turns their head to the right, rotating about 35 degrees, as if noticing something nearby" },
+  h9: { subject: "gently rolls and stretches their neck in a relaxed, organic side-to-side tilt" },
+  h10: { subject: "bobs their head in a subtle rhythmic groove, as if swaying to an inner beat" },
+  // Expression
+  e1: { subject: "a warm, genuine smile gradually spreads across their face, with natural upward movement at the corners of the mouth and a soft brightening of the eyes" },
+  e2: { subject: "breaks into a wide, joyful laugh — mouth opens, cheeks lift, eyes crinkle at the corners, radiating real happiness" },
+  e3: { subject: "their expression becomes composed and serious — neutral mouth, steady gaze, with a quiet intensity in the eyes" },
+  e4: { subject: "eyebrows raise, eyes widen, and mouth opens slightly in a natural expression of surprise or astonishment" },
+  e5: { subject: "expression shifts to gentle sadness — brow slightly furrowed, corners of the mouth downturned, eyes becoming soft and downcast" },
+  e6: { subject: "juts their lower lip out in a playful pout, with slightly furrowed brows suggesting cute sulkiness" },
+  e7: { subject: "gives a subtle, alluring expression — a slight smirk, one eyebrow gently raised, a confident and playful look in the eyes" },
+  e8: { subject: "wrinkles their nose and curls one side of their mouth in a natural expression of mild disgust or distaste" },
+  e9: { subject: "eyes widen, eyebrows raise toward the center of the forehead, expression conveying genuine fear or anxiety" },
+  e10: { subject: "tilts their head slightly and furrows one brow, their expression conveying genuine puzzlement or confusion" },
+  // Eyes
+  y1: { subject: "blinks naturally one or two times with a relaxed, unhurried rhythm" },
+  y2: { subject: "gives a playful, confident wink with their left eye while keeping the right eye steady" },
+  y3: { subject: "gives a quick, charming wink with their right eye" },
+  y4: { subject: "performs a slow, expressive eye roll upward and to the side" },
+  y5: { subject: "eyes shift naturally from side to side as if taking in their surroundings, then return to look forward" },
+  y6: { subject: "narrows their eyes slightly, as if looking at something in bright light or with focused concentration" },
+  y7: { subject: "eyes open wide and alert, conveying intensity or heightened awareness" },
+  y8: { subject: "tears well up gently in their eyes and roll slowly down their cheeks, with a subtle quiver of emotion" },
+  y9: { subject: "eyelids grow heavy and droop slowly, blinking in a drowsy, languid rhythm as if fighting sleep" },
+  y10: { subject: "eyes brighten and sparkle with excitement and joy, wide, luminous, and full of life" },
+  // Ambient (scene-level, not subject-level)
+  a1: { scene: "the subject's chest and shoulders rise and fall with a calm, visible breathing rhythm" },
+  a2: { scene: "a gentle breeze passes through the subject's hair, causing it to sway and flutter softly and naturally" },
+  a3: { scene: "soft rain falls in the background, with droplets drifting through the air, creating a moody, atmospheric mood" },
+  a4: { scene: "soft snowflakes drift gently in the background, creating a peaceful and wintry atmosphere" },
+  a5: { scene: "subtle neon color flickers and light glitch distortions pulse in the background, giving a cyberpunk aesthetic" },
+  a6: { scene: "warm golden sunlight shifts slowly across the subject's face, as if clouds are gently passing overhead" },
+  a7: { scene: "the background has a beautiful cinematic shallow depth-of-field bokeh blur, keeping the subject sharp and the surroundings soft" },
+  a8: { scene: "tiny sparkling dust motes and light particles float gently through the air around the subject" },
+  a9: { scene: "the air behind the subject shimmers with a subtle heat-haze distortion" },
+  a10: { scene: "soft, wispy smoke or fog drifts through the scene, creating a mysterious, dreamlike atmosphere" },
+  // Camera (camera-level)
+  c1: { camera: "the camera is completely stationary, perfectly still, as if mounted on a solid tripod" },
+  c2: { camera: "the camera performs a very slow, smooth push-in zoom toward the subject's face" },
+  c3: { camera: "the camera slowly pulls back in a gentle zoom-out, revealing more of the scene" },
+  c4: { camera: "the camera performs a slow, smooth pan to the left" },
+  c5: { camera: "the camera performs a slow, smooth pan to the right" },
+  c6: { camera: "the camera has a subtle organic handheld sway — gentle micro-movements giving the shot a natural, documentary feel" },
+  c7: { camera: "the frame is held at a slight Dutch angle tilt, giving the shot a stylized and dramatic composition" },
+  c8: { camera: "focus smoothly transitions from a soft blurred background to the sharp subject in a cinematic rack focus pull" },
+  c9: { camera: "a dramatic Hitchcock dolly-zoom effect — camera moves forward while zooming out simultaneously, creating surreal depth distortion" },
+  c10: { camera: "the camera slowly orbits around the subject in a smooth, sweeping arc" },
+};
+
 const AccordionGroup = ({ title, items, selected, onToggle, onCustomChange, customValues, lang }) => {
   const [isOpen, setIsOpen] = useState(false);
   const t = TEXTS[lang];
@@ -405,28 +464,55 @@ function App() {
     setBalance(null);
   };
 
-  // Prompt builder — Veo3 natural language style
+  // Prompt builder — Veo3 structured natural language
   useEffect(() => {
-    const actionPrompts = selectedActions.map(id => {
-      let lbl = "";
+    const subjectLines = [];
+    const sceneLines = [];
+    const cameraLines = [];
+
+    selectedActions.forEach(id => {
+      let foundItem = null;
       Object.values(ACTIONS_DATA).forEach(group => {
-        const found = group.find(a => a.id === id);
-        if (found) {
-          lbl = found.isCustom && customActionValues[id]
-            ? customActionValues[id]
-            : found.label.en;
-        }
+        const item = group.find(a => a.id === id);
+        if (item) foundItem = item;
       });
-      return lbl;
-    }).filter(Boolean);
+      if (!foundItem) return;
 
-    const motionDesc = actionPrompts.length > 0
-      ? `The subject performs: ${actionPrompts.join(", ")}.`
-      : "The subject makes a very subtle, natural breathing motion.";
+      if (foundItem.isCustom && customActionValues[id]) {
+        subjectLines.push(customActionValues[id]);
+        return;
+      }
 
-    setCustomPrompt(
-      `Photorealistic video. Keep the person's face, hair, clothing, and background exactly as in the reference image. ${motionDesc} Cinematic lighting, high fidelity, no morphing, no distortion, no scene change.`
-    );
+      const desc = ACTION_DESCRIPTIONS[id];
+      if (!desc) return;
+      if (desc.subject) subjectLines.push(desc.subject);
+      if (desc.scene) sceneLines.push(desc.scene);
+      if (desc.camera) cameraLines.push(desc.camera);
+    });
+
+    const parts = [
+      "A photorealistic portrait video, faithful to the reference photo. The subject's face, hair, skin tone, clothing, and background must remain identical throughout the entire clip.",
+    ];
+
+    if (subjectLines.length > 0) {
+      parts.push(`Subject motion: The subject ${subjectLines.join('; ')}.`);
+    } else {
+      parts.push("Subject motion: The subject remains nearly still, with only a subtle natural breathing motion.");
+    }
+
+    if (sceneLines.length > 0) {
+      parts.push(`Scene & atmosphere: ${sceneLines.join(' Additionally, ')}.`);
+    }
+
+    if (cameraLines.length > 0) {
+      parts.push(`Camera: ${cameraLines.join(' ')}.`);
+    } else {
+      parts.push("Camera: Static, no camera movement.");
+    }
+
+    parts.push("The motion is smooth, organic, and lifelike. Avoid: face morphing, identity change, background drift, flickering, jump cuts, or any distortion.");
+
+    setCustomPrompt(parts.join('\n\n'));
   }, [selectedActions, customActionValues]);
 
   useEffect(() => {
@@ -787,18 +873,38 @@ function App() {
           </div>
         </div>
 
-        {/* Prompt Engineer */}
+        {/* Prompt Summary */}
         <div className="mb-4 pt-4 border-t border-zinc-800">
-          <label className="select-group-header flex items-center gap-2 mb-2">
-            <Edit3 size={12} />
-            <span>{t.promptLabel}</span>
-          </label>
-          <div className="relative group">
-            <textarea
-              value={customPrompt}
-              onChange={(e) => setCustomPrompt(e.target.value)}
-              className="w-full h-24 bg-black border border-zinc-800 rounded-lg p-3 text-[10px] text-zinc-400 font-mono resize-none focus:border-blue-500/50 focus:text-zinc-200 focus:outline-none transition-colors"
-            />
+          <div className="flex items-center gap-2 mb-2">
+            <Sparkles size={12} className="text-blue-400" />
+            <span className="select-group-header">{lang === 'zh' ? 'AI 参数摘要' : 'AI Parameters'}</span>
+          </div>
+          <div className="bg-black/40 border border-zinc-800 rounded-lg p-3 space-y-1.5">
+            {selectedActions.length === 0 ? (
+              <p className="text-[10px] text-zinc-600 italic">{lang === 'zh' ? '未选择动作，将生成自然呼吸效果' : 'No actions selected — subtle breathing motion'}</p>
+            ) : (
+              Object.entries(ACTIONS_DATA).map(([category, items]) => {
+                const active = items.filter(item => selectedActions.includes(item.id));
+                if (active.length === 0) return null;
+                return (
+                  <div key={category} className="flex items-start gap-2">
+                    <span className="text-[10px] text-zinc-500 w-16 shrink-0 pt-0.5">{t.categories[category]}</span>
+                    <div className="flex flex-wrap gap-1">
+                      {active.map(item => (
+                        <span key={item.id} className="text-[10px] bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 py-0.5 rounded">
+                          {lang === 'zh' ? item.label.zh : item.label.en}
+                          {item.isCustom && customActionValues[item.id] ? `: ${customActionValues[item.id].slice(0, 12)}…` : ''}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+            <div className="flex items-center gap-2 pt-1 mt-1 border-t border-zinc-800/60">
+              <span className="text-[10px] text-zinc-500 w-16 shrink-0">{lang === 'zh' ? '画幅' : 'Ratio'}</span>
+              <span className="text-[10px] bg-zinc-800 text-zinc-300 px-1.5 py-0.5 rounded">{aspectRatio}</span>
+            </div>
           </div>
         </div>
 

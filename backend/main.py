@@ -221,7 +221,7 @@ async def get_status(task_id: str):
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
                 YUNWU_QUERY_URL,
-                params={"taskId": yunwu_task_id},
+                params={"id": yunwu_task_id},
                 headers=headers,
             )
             data = resp.json()
