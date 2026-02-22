@@ -369,7 +369,6 @@ function App() {
   const [imageFile, setImageFile] = useState(null);
   const [selectedActions, setSelectedActions] = useState([]);
   const [customActionValues, setCustomActionValues] = useState({});
-  const [duration, setDuration] = useState(5);
   const [aspectRatio, setAspectRatio] = useState("16:9");
   const [isGenerating, setIsGenerating] = useState(false);
   const [results, setResults] = useState([]);
@@ -406,11 +405,8 @@ function App() {
     setBalance(null);
   };
 
-  // Prompt builder
+  // Prompt builder — Veo3 natural language style
   useEffect(() => {
-    const baseConstraints =
-      "photorealistic, 8k, raw texture, highly detailed skin pores, perfect eyes, keep original face identity unchanged, keep original hairstyle unchanged, keep original clothing unchanged, keep original background, static composition";
-
     const actionPrompts = selectedActions.map(id => {
       let lbl = "";
       Object.values(ACTIONS_DATA).forEach(group => {
@@ -422,16 +418,16 @@ function App() {
         }
       });
       return lbl;
-    });
+    }).filter(Boolean);
 
-    const motionPart = actionPrompts.length > 0
-      ? `subtle motion: ${actionPrompts.join(", ")}, cinematic lighting, high fidelity`
-      : "very subtle breathing motion, high fidelity";
+    const motionDesc = actionPrompts.length > 0
+      ? `The subject performs: ${actionPrompts.join(", ")}.`
+      : "The subject makes a very subtle, natural breathing motion.";
 
-    const negativeConstraints = " --neg morphing, distortion, face change, clothes change, background change, fast motion, blur, cartoon, painting, low quality";
-
-    setCustomPrompt(`${baseConstraints}, ${motionPart}${negativeConstraints} --motion-bucket-id 127 --fps 24 --ar ${aspectRatio}`);
-  }, [selectedActions, customActionValues, aspectRatio]);
+    setCustomPrompt(
+      `Photorealistic video. Keep the person's face, hair, clothing, and background exactly as in the reference image. ${motionDesc} Cinematic lighting, high fidelity, no morphing, no distortion, no scene change.`
+    );
+  }, [selectedActions, customActionValues]);
 
   useEffect(() => {
     if (consoleEndRef.current) {
@@ -491,7 +487,6 @@ function App() {
             id: taskId,
             action: selectedActions.length > 0 ? 'Video Ready' : 'Default Motion',
             src: imagePreviewUrl,
-            duration,
             videoUrl,
             ratio: aspectRatio,
           }, ...prev]);
@@ -519,15 +514,14 @@ function App() {
     setIsGenerating(true);
 
     addLog("Initializing MotionX Engine v2.0...");
-    addLog(`Config: Duration=${duration}s, Ratio=${aspectRatio}, Actions=[${selectedActions.length}]`);
+    addLog(`Config: Ratio=${aspectRatio}, Actions=[${selectedActions.length}]`);
 
     try {
       const formData = new FormData();
       formData.append("image", imageFile);
       formData.append("prompt", customPrompt);
-      formData.append("duration", duration);
-      formData.append("actions", selectedActions.join(','));
       formData.append("aspect_ratio", aspectRatio);
+      formData.append("actions", selectedActions.join(','));
 
       addLog("Uploading image and submitting task...");
 
@@ -542,11 +536,14 @@ function App() {
       if (!resp.ok) {
         const msg = data.detail || data.error || `HTTP ${resp.status}`;
         if (resp.status === 402) {
-          addLog(`ERROR: ${msg}`);
+          addLog(`ERROR: 积分不足`);
           alert(msg);
+        } else if (resp.status === 503) {
+          addLog(`ERROR: AI 服务繁忙，请稍后重试`);
+          alert("AI 服务器当前请求繁忙，请稍等片刻后重试。");
         } else {
           addLog(`ERROR: ${msg}`);
-          alert(`生成失败: ${msg}`);
+          alert(`生成失败，请稍后重试。`);
         }
         setIsGenerating(false);
         return;
@@ -637,8 +634,6 @@ function App() {
                 <div className="overflow-hidden flex-1 flex flex-col justify-center">
                   <div className="text-xs font-medium truncate text-gray-200 mb-0.5">{res.action}</div>
                   <div className="text-[10px] text-gray-500 flex items-center gap-1">
-                    <span>{res.duration}s</span>
-                    <span className="w-0.5 h-0.5 bg-gray-600 rounded-full"></span>
                     <span className="uppercase">{res.ratio}</span>
                   </div>
                 </div>
@@ -745,33 +740,14 @@ function App() {
       {/* 3. Right Control Panel */}
       <aside className="control-panel w-[320px]">
 
-        {/* Settings Block 1: Duration */}
-        <div className="mb-4">
-          <label className="select-group-header flex items-center justify-between">
-            <span>{t.duration}</span>
-            <Settings size={12} />
-          </label>
-          <div className="flex bg-black rounded-lg p-1 border border-zinc-800">
-            {[5, 10, 15].map(sec => (
-              <button
-                key={sec}
-                onClick={() => setDuration(sec)}
-                className={`flex-1 py-1.5 text-xs rounded-md transition-all font-medium ${duration === sec ? 'bg-zinc-800 text-blue-400 shadow-sm border border-zinc-700' : 'text-zinc-500 hover:text-zinc-300'}`}
-              >
-                {sec}s
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Settings Block 2: Aspect Ratio */}
+        {/* Settings Block: Aspect Ratio — Veo3 only supports 16:9 and 9:16 */}
         <div className="mb-6">
           <label className="select-group-header flex items-center justify-between">
             <span>{t.aspectRatio}</span>
             <Monitor size={12} />
           </label>
           <div className="grid grid-cols-2 gap-2">
-            {Object.keys(t.ratios).map(ratio => (
+            {["16:9", "9:16"].map(ratio => (
               <button
                 key={ratio}
                 onClick={() => setAspectRatio(ratio)}
@@ -783,8 +759,6 @@ function App() {
               >
                 {ratio === "16:9" && <div className="w-3 h-2 border border-current rounded-[1px]"></div>}
                 {ratio === "9:16" && <div className="w-2 h-3 border border-current rounded-[1px]"></div>}
-                {ratio === "1:1" && <div className="w-2 h-2 border border-current rounded-[1px]"></div>}
-                {ratio === "3:4" && <div className="w-2 h-3 border border-current rounded-[1px]"></div>}
                 <span>{ratio}</span>
               </button>
             ))}

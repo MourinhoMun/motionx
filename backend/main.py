@@ -19,13 +19,9 @@ LICENSE_BACKEND_URL = os.getenv("LICENSE_BACKEND_URL", "https://pengip.com")
 SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "https://pengip.com")
 GENERATE_COST = 50
 
-# aspect_ratio -> Yunwu API params
-RATIO_MAP = {
-    "16:9": {"orientation": "landscape", "size": "large"},
-    "9:16": {"orientation": "portrait", "size": "large"},
-    "1:1":  {"orientation": "portrait", "size": "medium"},
-    "3:4":  {"orientation": "portrait", "size": "large"},
-}
+VEO3_MODEL = "veo3-fast"
+# veo3 只支持 16:9 和 9:16，其他比例降回 16:9
+VEO3_SUPPORTED_RATIOS = {"16:9", "9:16"}
 
 app = FastAPI()
 
@@ -116,9 +112,8 @@ async def generate_video(
     request: Request,
     image: UploadFile = File(...),
     prompt: str = Form(...),
-    duration: int = Form(...),
-    actions: str = Form(default=""),
     aspect_ratio: str = Form("16:9"),
+    actions: str = Form(default=""),
 ):
     token = request.headers.get("Authorization")
     await check_balance(token)
@@ -134,16 +129,16 @@ async def generate_video(
     public_image_url = f"{SERVER_BASE_URL}/motionx-uploads/{filename}"
     print(f"[OK] Image saved → {public_image_url}")
 
-    # Build Yunwu payload
-    ratio_params = RATIO_MAP.get(aspect_ratio, {"orientation": "portrait", "size": "large"})
+    # veo3 只支持 16:9 / 9:16
+    safe_ratio = aspect_ratio if aspect_ratio in VEO3_SUPPORTED_RATIOS else "16:9"
+
     payload = {
-        "images": [public_image_url],
-        "model": "sora-2-all",
-        "orientation": ratio_params["orientation"],
+        "model": VEO3_MODEL,
         "prompt": prompt,
-        "size": ratio_params["size"],
-        "duration": duration,
-        "watermark": False,
+        "images": [public_image_url],
+        "enhance_prompt": True,
+        "enable_upsample": True,
+        "aspect_ratio": safe_ratio,
     }
     headers = {
         "Accept": "application/json",
@@ -151,39 +146,46 @@ async def generate_video(
         "Content-Type": "application/json",
     }
 
-    print(f"[API] Calling Yunwu: {payload}")
+    print(f"[API] Calling Yunwu Veo3: {payload}")
 
-    try:
+    async def call_yunwu():
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(YUNWU_CREATE_URL, headers=headers, json=payload)
             api_data = resp.json()
             print(f"[API] Yunwu response ({resp.status_code}): {api_data}")
+            return resp.status_code, api_data
 
-            if resp.status_code != 200:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Yunwu API Error {resp.status_code}: {api_data}",
-                )
+    try:
+        status_code, api_data = await call_yunwu()
 
-            # Extract task id (field name varies by version)
-            yunwu_task_id = (
-                api_data.get("taskId")
-                or api_data.get("task_id")
-                or api_data.get("id")
-                or api_data.get("data", {}).get("taskId")
-            )
-            if not yunwu_task_id:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"No task_id in Yunwu response: {api_data}",
-                )
+        # 上游过载时自动重试一次
+        if status_code == 500 and "饱和" in str(api_data.get("error", "")):
+            print("[API] Yunwu upstream saturated, retrying in 4s...")
+            await asyncio.sleep(4)
+            status_code, api_data = await call_yunwu()
+
+        if status_code != 200:
+            err_msg = api_data.get("error", "")
+            if "饱和" in err_msg or "负载" in err_msg:
+                raise HTTPException(status_code=503, detail="AI 服务器当前请求繁忙，请稍等片刻后重试。")
+            raise HTTPException(status_code=502, detail=f"生成服务暂时不可用，请稍后重试。（{err_msg}）")
+
+        # 提取任务 ID
+        yunwu_task_id = (
+            api_data.get("id")
+            or api_data.get("taskId")
+            or api_data.get("task_id")
+            or api_data.get("data", {}).get("taskId")
+        )
+        if not yunwu_task_id:
+            raise HTTPException(status_code=502, detail=f"No task_id in Yunwu response: {api_data}")
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Yunwu connection error: {e}")
 
-    # Persist task state
+    # 持久化任务状态
     tasks[file_id] = {
         "yunwu_task_id": yunwu_task_id,
         "status": "processing",
@@ -192,9 +194,7 @@ async def generate_video(
         "created_at": time.time(),
     }
 
-    # Deduct credits asynchronously (fire-and-forget)
     asyncio.create_task(deduct_license(token))
-
     return {"status": "processing", "task_id": file_id}
 
 
