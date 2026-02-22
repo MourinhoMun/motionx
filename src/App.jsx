@@ -5,10 +5,14 @@ import {
   Smile, Eye, EyeOff, Wind, MoveLeft, MoveRight, ArrowDown, RefreshCw, Zap,
   Globe, Terminal, Edit3, Save, MessageSquare, CloudRain, Snowflake, Activity,
   ChevronDown, ChevronRight, Image as ImageIcon, Heart, Hash, Sun, Moon,
-  Camera, Film, Sparkles, User, Palette, Layers, Minimize2, Maximize2, Monitor
+  Camera, Film, Sparkles, User, Palette, Layers, Minimize2, Maximize2, Monitor,
+  KeyRound, LogOut, Coins, Home
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import './index.css';
+
+const TOKEN_KEY = 'pengip_token';
+const API_BASE = '/motionx/api';
 
 // --- Configuration & Data ---
 const TEXTS = {
@@ -31,6 +35,13 @@ const TEXTS = {
     play: "Play",
     uploadBtn: "Select File",
     customInputPlaceholder: "Describe custom action...",
+    activateTitle: "Activate MicroMotion",
+    activateDesc: "Enter your activation code to get started",
+    activateCode: "Activation Code",
+    activateBtn: "Activate",
+    activating: "Activating...",
+    balance: "Credits",
+    logout: "Logout",
     categories: {
       Head: "Head Pose",
       Expression: "Expression",
@@ -65,6 +76,13 @@ const TEXTS = {
     play: "播放",
     uploadBtn: "选择文件",
     customInputPlaceholder: "描述自定义动作...",
+    activateTitle: "激活 MicroMotion",
+    activateDesc: "输入激活码开始使用，每次生成消耗 50 积分",
+    activateCode: "激活码",
+    activateBtn: "立即激活",
+    activating: "激活中...",
+    balance: "积分",
+    logout: "退出",
     categories: {
       Head: "头部姿态",
       Expression: "面部表情",
@@ -235,16 +253,124 @@ const AccordionGroup = ({ title, items, selected, onToggle, onCustomChange, cust
   );
 };
 
+// ── Activation Gate ────────────────────────────────────────────────────────────
+
+function ActivationGate({ lang, onActivated }) {
+  const t = TEXTS[lang];
+  const [code, setCode] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleActivate = async () => {
+    if (!code.trim()) return;
+    setLoading(true);
+    setError('');
+    try {
+      // Generate or reuse a stable device ID
+      let deviceId = localStorage.getItem('pengip_device_id');
+      if (!deviceId) {
+        deviceId = crypto.randomUUID();
+        localStorage.setItem('pengip_device_id', deviceId);
+      }
+
+      const resp = await fetch(`${API_BASE}/license/activate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: code.trim(), deviceId }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        setError(data.error || data.message || '激活失败，请检查激活码');
+        return;
+      }
+      if (data.token) {
+        localStorage.setItem(TOKEN_KEY, data.token);
+        onActivated(data.token, data.user?.balance ?? data.balance ?? 0);
+      } else {
+        setError('服务器未返回 token，请联系鹏哥');
+      }
+    } catch (e) {
+      setError('网络错误，请稍后重试');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="w-full max-w-sm bg-zinc-900 border border-zinc-800 rounded-2xl p-8"
+      >
+        <div className="flex items-center gap-3 mb-6">
+          <div className="p-2 bg-blue-500/10 rounded-xl border border-blue-500/20">
+            <Video size={24} className="text-blue-400" />
+          </div>
+          <div className="flex-1">
+            <h1 className="text-lg font-bold text-white">MicroMotion</h1>
+            <p className="text-xs text-zinc-500">AI Portrait Animator</p>
+          </div>
+          <a
+            href="https://pengip.com"
+            className="p-1.5 rounded hover:bg-white/10 text-zinc-500 hover:text-zinc-300 border border-white/5 transition-colors"
+            title="返回主页"
+          >
+            <Home size={14} />
+          </a>
+        </div>
+
+        <h2 className="text-base font-semibold text-zinc-200 mb-1">{t.activateTitle}</h2>
+        <p className="text-xs text-zinc-500 mb-6">{t.activateDesc}</p>
+
+        <div className="mb-4">
+          <label className="text-xs text-zinc-400 mb-1.5 block">{t.activateCode}</label>
+          <div className="relative">
+            <KeyRound size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+            <input
+              type="text"
+              value={code}
+              onChange={e => setCode(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleActivate()}
+              placeholder="XXXX-XXXX-XXXX-XXXX"
+              className="w-full bg-black border border-zinc-800 rounded-lg pl-9 pr-3 py-2.5 text-sm text-white placeholder:text-zinc-600 focus:border-blue-500 focus:outline-none transition-colors"
+            />
+          </div>
+        </div>
+
+        {error && (
+          <p className="text-xs text-red-400 mb-4 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>
+        )}
+
+        <button
+          onClick={handleActivate}
+          disabled={loading || !code.trim()}
+          className="w-full bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 disabled:from-zinc-800 disabled:to-zinc-800 disabled:text-zinc-600 text-white font-semibold py-2.5 rounded-xl transition-all flex items-center justify-center gap-2"
+        >
+          {loading ? <RefreshCw size={16} className="animate-spin" /> : <Zap size={16} fill="currentColor" className="text-yellow-300" />}
+          {loading ? t.activating : t.activateBtn}
+        </button>
+      </motion.div>
+    </div>
+  );
+}
+
+// ── Main App ───────────────────────────────────────────────────────────────────
+
 function App() {
   const [lang, setLang] = useState('zh');
   const t = TEXTS[lang];
+
+  // Auth state
+  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
+  const [balance, setBalance] = useState(null);
 
   const [image, setImage] = useState(null);
   const [imageFile, setImageFile] = useState(null);
   const [selectedActions, setSelectedActions] = useState([]);
   const [customActionValues, setCustomActionValues] = useState({});
   const [duration, setDuration] = useState(5);
-  const [aspectRatio, setAspectRatio] = useState("16:9"); // Default Aspect Ratio
+  const [aspectRatio, setAspectRatio] = useState("16:9");
   const [isGenerating, setIsGenerating] = useState(false);
   const [results, setResults] = useState([]);
 
@@ -252,25 +378,50 @@ function App() {
   const [logs, setLogs] = useState([]);
   const consoleEndRef = useRef(null);
   const fileInputRef = useRef(null);
+  const pollTimerRef = useRef(null);
 
-  // --- Strict Prompt Logic ---
+  // Fetch balance on mount (if token exists)
+  useEffect(() => {
+    if (token) fetchBalance();
+  }, [token]);
+
+  const fetchBalance = async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/license/balance`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await resp.json();
+      if (data.balance !== undefined) setBalance(data.balance);
+    } catch {}
+  };
+
+  const handleActivated = (newToken, newBalance) => {
+    setToken(newToken);
+    setBalance(newBalance);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem(TOKEN_KEY);
+    setToken('');
+    setBalance(null);
+  };
+
+  // Prompt builder
   useEffect(() => {
     const baseConstraints =
       "photorealistic, 8k, raw texture, highly detailed skin pores, perfect eyes, keep original face identity unchanged, keep original hairstyle unchanged, keep original clothing unchanged, keep original background, static composition";
 
     const actionPrompts = selectedActions.map(id => {
-      let label = "";
+      let lbl = "";
       Object.values(ACTIONS_DATA).forEach(group => {
         const found = group.find(a => a.id === id);
         if (found) {
-          if (found.isCustom && customActionValues[id]) {
-            label = customActionValues[id];
-          } else {
-            label = found.label.en;
-          }
+          lbl = found.isCustom && customActionValues[id]
+            ? customActionValues[id]
+            : found.label.en;
         }
       });
-      return label;
+      return lbl;
     });
 
     const motionPart = actionPrompts.length > 0
@@ -300,15 +451,13 @@ function App() {
       setImage(url);
       setImageFile(file);
       setResults([]);
-      addLog(`Image loaded: ${file.name} (Resolution: Original)`);
+      addLog(`Image loaded: ${file.name}`);
     }
   };
 
   const toggleAction = (actionId) => {
     setSelectedActions(prev =>
-      prev.includes(actionId)
-        ? prev.filter(id => id !== actionId)
-        : [...prev, actionId]
+      prev.includes(actionId) ? prev.filter(id => id !== actionId) : [...prev, actionId]
     );
   };
 
@@ -316,8 +465,57 @@ function App() {
     setCustomActionValues(prev => ({ ...prev, [id]: value }));
   };
 
+  // Poll task status
+  const pollStatus = (taskId, imagePreviewUrl) => {
+    let attempts = 0;
+    const MAX_ATTEMPTS = 120; // 10 minutes max (5s interval)
+
+    const poll = async () => {
+      attempts++;
+      if (attempts > MAX_ATTEMPTS) {
+        addLog("ERROR: Timeout - generation took too long");
+        setIsGenerating(false);
+        return;
+      }
+
+      try {
+        const resp = await fetch(`${API_BASE}/status/${taskId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await resp.json();
+        addLog(`Polling... status: ${data.status}${data.yunwu_status ? ` (${data.yunwu_status})` : ''}`);
+
+        if (data.status === 'completed') {
+          const videoUrl = data.video_url;
+          setResults(prev => [{
+            id: taskId,
+            action: selectedActions.length > 0 ? 'Video Ready' : 'Default Motion',
+            src: imagePreviewUrl,
+            duration,
+            videoUrl,
+            ratio: aspectRatio,
+          }, ...prev]);
+          setIsGenerating(false);
+          addLog(`Success! Video ready: ${videoUrl}`);
+          fetchBalance(); // Refresh balance after deduction
+        } else if (data.status === 'failed') {
+          addLog(`ERROR: ${data.error || 'Generation failed'}`);
+          setIsGenerating(false);
+        } else {
+          pollTimerRef.current = setTimeout(poll, 5000);
+        }
+      } catch (e) {
+        addLog(`Poll error: ${e.message}, retrying...`);
+        pollTimerRef.current = setTimeout(poll, 5000);
+      }
+    };
+
+    pollTimerRef.current = setTimeout(poll, 5000);
+  };
+
   const handleGenerate = async () => {
     if (!image || !imageFile) return;
+    if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
     setIsGenerating(true);
 
     addLog("Initializing MotionX Engine v2.0...");
@@ -329,45 +527,46 @@ function App() {
       formData.append("prompt", customPrompt);
       formData.append("duration", duration);
       formData.append("actions", selectedActions.join(','));
-      formData.append("aspect_ratio", aspectRatio); // New Parameter
+      formData.append("aspect_ratio", aspectRatio);
 
-      addLog("Uploading assets to backend...");
+      addLog("Uploading image and submitting task...");
 
-      const response = await fetch("http://localhost:8000/generate", {
+      const resp = await fetch(`${API_BASE}/generate`, {
         method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
         body: formData,
       });
 
-      if (!response.ok) throw new Error("Backend connection failed");
+      const data = await resp.json();
 
-      const data = await response.json();
-
-      addLog(`Backend Task ID: ${data.task_id}`);
-      addLog(`Generation Status: ${data.status}`);
-      addLog(`>> API Payload Sent: See backend logs`);
-
-      // Mock Response Handling
-      setTimeout(() => {
-        const newResult = {
-          id: data.task_id,
-          action: selectedActions.length > 0 ? 'Video Ready' : 'Default',
-          src: image,
-          duration: duration,
-          url: data.mock_url,
-          ratio: aspectRatio
-        };
-        setResults(prev => [newResult, ...prev]);
+      if (!resp.ok) {
+        const msg = data.detail || data.error || `HTTP ${resp.status}`;
+        if (resp.status === 402) {
+          addLog(`ERROR: ${msg}`);
+          alert(msg);
+        } else {
+          addLog(`ERROR: ${msg}`);
+          alert(`生成失败: ${msg}`);
+        }
         setIsGenerating(false);
-        addLog("Success! Video rendered and ready.");
-      }, 2000);
+        return;
+      }
+
+      addLog(`Task submitted! ID: ${data.task_id}`);
+      addLog("Waiting for Yunwu to generate video (may take 1-5 minutes)...");
+
+      pollStatus(data.task_id, image);
 
     } catch (err) {
-      console.error(err);
       addLog(`ERROR: ${err.message}`);
       setIsGenerating(false);
-      alert("Failed to connect to backend (Check if running on port 8000?)");
     }
   };
+
+  // Show activation gate if not logged in
+  if (!token) {
+    return <ActivationGate lang={lang} onActivated={handleActivated} />;
+  }
 
   return (
     <div className="app-container selection:bg-blue-500/30 selection:text-blue-200">
@@ -381,11 +580,34 @@ function App() {
             </div>
             <span className="tracking-tight">MotionX</span>
           </div>
+          <div className="flex items-center gap-1">
+            <a
+              href="https://pengip.com"
+              title="返回主页"
+              className="p-1.5 rounded hover:bg-white/10 text-gray-400 hover:text-white border border-white/5 transition-colors"
+            >
+              <Home size={14} />
+            </a>
+            <button
+              onClick={() => setLang(prev => prev === 'en' ? 'zh' : 'en')}
+              className="p-1 px-2 rounded hover:bg-white/10 text-[10px] text-gray-400 border border-white/5 uppercase font-medium tracking-wider"
+            >
+              {lang === 'en' ? 'EN' : ' 中 '}
+            </button>
+          </div>
+        </div>
+
+        {/* Balance & Logout */}
+        <div className="flex items-center justify-between mb-4 px-1">
+          <div className="flex items-center gap-1.5 text-xs text-zinc-400">
+            <Coins size={12} className="text-yellow-500" />
+            <span>{t.balance}: <span className="text-yellow-400 font-medium">{balance ?? '...'}</span></span>
+          </div>
           <button
-            onClick={() => setLang(prev => prev === 'en' ? 'zh' : 'en')}
-            className="p-1 px-2 rounded hover:bg-white/10 text-[10px] text-gray-400 border border-white/5 uppercase font-medium tracking-wider"
+            onClick={handleLogout}
+            className="flex items-center gap-1 text-[10px] text-zinc-500 hover:text-red-400 transition-colors"
           >
-            {lang === 'en' ? 'EN' : ' 中 '}
+            <LogOut size={10} /> {t.logout}
           </button>
         </div>
 
@@ -422,12 +644,20 @@ function App() {
                 </div>
               </div>
               <div className="flex gap-1.5 mt-1 opacity-60 group-hover:opacity-100 transition-opacity">
-                <button className="flex-1 bg-black/30 hover:bg-blue-500 hover:text-white text-[10px] py-1.5 rounded text-gray-400 transition-colors flex items-center justify-center gap-1.5 border border-white/5">
-                  <Download size={10} /> {t.download}
-                </button>
-                <button className="px-2 bg-black/30 hover:bg-red-500/20 hover:text-red-400 hover:border-red-500/20 text-[10px] py-1.5 rounded text-gray-400 transition-colors border border-white/5">
-                  <Trash2 size={10} />
-                </button>
+                {res.videoUrl ? (
+                  <a
+                    href={res.videoUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 bg-black/30 hover:bg-blue-500 hover:text-white text-[10px] py-1.5 rounded text-gray-400 transition-colors flex items-center justify-center gap-1.5 border border-white/5"
+                  >
+                    <Download size={10} /> {t.download}
+                  </a>
+                ) : (
+                  <button className="flex-1 bg-black/30 text-[10px] py-1.5 rounded text-gray-600 border border-white/5 cursor-not-allowed">
+                    Processing...
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -480,7 +710,7 @@ function App() {
                       <div className="absolute inset-0 border-4 border-t-blue-500 border-r-transparent border-b-transparent border-l-transparent rounded-full animate-spin"></div>
                     </div>
                     <span className="text-blue-400 text-lg font-medium animate-pulse mb-2">{t.generating}</span>
-                    <p className="text-zinc-500 text-xs max-w-[200px]">Generating high-fidelity motion frames with {aspectRatio} ratio...</p>
+                    <p className="text-zinc-500 text-xs max-w-[200px]">Generating with {aspectRatio} ratio... may take 1-5 min</p>
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -534,7 +764,7 @@ function App() {
           </div>
         </div>
 
-        {/* Settings Block 2: Aspect Ratio (NEW) */}
+        {/* Settings Block 2: Aspect Ratio */}
         <div className="mb-6">
           <label className="select-group-header flex items-center justify-between">
             <span>{t.aspectRatio}</span>
@@ -609,7 +839,9 @@ function App() {
           ) : (
             <Zap size={18} fill="currentColor" className="text-yellow-300" />
           )}
-          <span className="tracking-wide">{isGenerating ? t.generating : t.generate}</span>
+          <span className="tracking-wide">
+            {isGenerating ? t.generating : `${t.generate} (-50 pts)`}
+          </span>
         </button>
 
       </aside>
