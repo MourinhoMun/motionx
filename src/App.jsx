@@ -423,8 +423,31 @@ function App() {
   // Auth state
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
   const [balance, setBalance] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
 
-  const [image, setImage] = useState(null);
+  // 优先尝试从主站 cookie 换取新 token（同域，cookie 自动携带）
+  useEffect(() => {
+    async function tryAutoLogin() {
+      try {
+        const res = await fetch('/api/v1/user/token');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.token) {
+            localStorage.setItem(TOKEN_KEY, data.token);
+            setToken(data.token);
+            if (data.user?.balance !== undefined) setBalance(data.user.balance);
+          }
+        }
+      } catch { /* 主站不可达时降级到已存 token */ }
+      setAuthLoading(false);
+    }
+    tryAutoLogin();
+  }, []);
+
+  // Fetch balance on mount (if token exists)
+  useEffect(() => {
+    if (token) fetchBalance();
+  }, [token]);
   const [imageFile, setImageFile] = useState(null);
   const [selectedActions, setSelectedActions] = useState([]);
   const [customActionValues, setCustomActionValues] = useState({});
@@ -580,7 +603,13 @@ function App() {
           addLog(`Success! Video ready: ${videoUrl}`);
           fetchBalance(); // Refresh balance after deduction
         } else if (data.status === 'failed') {
-          addLog(`ERROR: ${data.error || 'Generation failed'}`);
+          const errMsg = data.error || 'Generation failed';
+          addLog(`ERROR: ${errMsg}`);
+          if (errMsg.includes('reCAPTCHA') || errMsg.includes('PERMISSION_DENIED') || errMsg.includes('403')) {
+            alert("生成失败：AI 服务器当前请求繁忙（Google Veo3 限流），请等待 5～10 分钟后再重试。\n\n提示：请勿短时间内连续提交多个任务，等上一个完成后再提交下一个。");
+          } else {
+            alert(`生成失败：${errMsg}`);
+          }
           setIsGenerating(false);
         } else {
           pollTimerRef.current = setTimeout(poll, 5000);
@@ -645,6 +674,16 @@ function App() {
       setIsGenerating(false);
     }
   };
+
+  // Show loading while auto-login is in progress
+  if (authLoading) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: '#09090b' }}>
+        <div style={{ width: 32, height: 32, border: '3px solid #3b82f6', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
+  }
 
   // Show activation gate if not logged in
   if (!token) {
