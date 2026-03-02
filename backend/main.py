@@ -158,16 +158,24 @@ async def generate_video(
     try:
         status_code, api_data = await call_yunwu()
 
-        # 上游过载时自动重试一次
-        if status_code == 500 and "饱和" in str(api_data.get("error", "")):
-            print("[API] Yunwu upstream saturated, retrying in 4s...")
-            await asyncio.sleep(4)
+        # 上游过载时自动重试，最多5次，间隔15秒
+        MAX_RETRIES = 5
+        RETRY_INTERVAL = 15  # 秒
+        retry_count = 0
+        while (
+            status_code == 500
+            and ("饱和" in str(api_data.get("error", "")) or "负载" in str(api_data.get("error", "")))
+            and retry_count < MAX_RETRIES
+        ):
+            retry_count += 1
+            print(f"[API] Yunwu upstream saturated, retry {retry_count}/{MAX_RETRIES} in {RETRY_INTERVAL}s...")
+            await asyncio.sleep(RETRY_INTERVAL)
             status_code, api_data = await call_yunwu()
 
         if status_code != 200:
             err_msg = api_data.get("error", "")
             if "饱和" in err_msg or "负载" in err_msg:
-                raise HTTPException(status_code=503, detail="AI 服务器当前请求繁忙，请稍等片刻后重试。")
+                raise HTTPException(status_code=503, detail="AI 服务器当前请求繁忙，已自动重试5次，请稍后再试。")
             raise HTTPException(status_code=502, detail=f"生成服务暂时不可用，请稍后重试。（{err_msg}）")
 
         # 提取任务 ID

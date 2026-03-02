@@ -409,6 +409,12 @@ function ActivationGate({ lang, onActivated }) {
           {loading ? <RefreshCw size={16} className="animate-spin" /> : <Zap size={16} fill="currentColor" className="text-yellow-300" />}
           {loading ? t.activating : t.activateBtn}
         </button>
+
+        <div className="mt-4 p-3 bg-zinc-800 rounded-lg text-center">
+          <p className="text-xs text-zinc-400">
+            请联系鹏哥微信：<span className="font-semibold text-blue-400">Peng_IP</span> 购买年卡或者获得7天试用
+          </p>
+        </div>
       </motion.div>
     </div>
   );
@@ -449,6 +455,7 @@ function App() {
     if (token) fetchBalance();
   }, [token]);
   const [imageFile, setImageFile] = useState(null);
+  const [image, setImage] = useState(null);
   const [selectedActions, setSelectedActions] = useState([]);
   const [customActionValues, setCustomActionValues] = useState({});
   const [aspectRatio, setAspectRatio] = useState("16:9");
