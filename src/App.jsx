@@ -21,6 +21,7 @@ const TEXTS = {
     noHistory: "No history yet",
     uploadTitle: "Upload Portrait",
     uploadDesc: "Drag & drop high-quality portrait",
+    uploadTip: "💡 Tip: For precise results, use reference images - one image is worth a thousand words!",
     preview: "Preview",
     duration: "Duration",
     aspectRatio: "Aspect Ratio",
@@ -42,6 +43,8 @@ const TEXTS = {
     activating: "Activating...",
     balance: "Credits",
     logout: "Logout",
+    generateWarning: "⚠️ Generation takes time, please don't close or refresh the page",
+    downloadWarning: "⚠️ Download immediately - videos are stored for 7 days only",
     categories: {
       Head: "Head Pose",
       Expression: "Expression",
@@ -62,6 +65,7 @@ const TEXTS = {
     noHistory: "暂无记录",
     uploadTitle: "上传人物肖像",
     uploadDesc: "拖拽或点击上传高清图片",
+    uploadTip: "💡 提示：生图类应用，如果需要很精准，最好多垫图，一张图胜过千万语言！",
     preview: "预览",
     duration: "视频时长",
     aspectRatio: "视频画幅",
@@ -83,6 +87,8 @@ const TEXTS = {
     activating: "激活中...",
     balance: "积分",
     logout: "退出",
+    generateWarning: "⚠️ 生成需要较长时间，请勿关闭或刷新页面",
+    downloadWarning: "⚠️ 请及时下载，视频仅保存7天",
     categories: {
       Head: "头部姿态",
       Expression: "面部表情",
@@ -458,7 +464,7 @@ function App() {
   const [image, setImage] = useState(null);
   const [selectedActions, setSelectedActions] = useState([]);
   const [customActionValues, setCustomActionValues] = useState({});
-  const [aspectRatio, setAspectRatio] = useState("16:9");
+  const [aspectRatio, setAspectRatio] = useState("9:16");
   const [isGenerating, setIsGenerating] = useState(false);
   const [results, setResults] = useState([]);
 
@@ -660,12 +666,15 @@ function App() {
         if (resp.status === 402) {
           addLog(`ERROR: 积分不足`);
           alert(msg);
-        } else if (resp.status === 503) {
+        } else if (resp.status === 400) {
+          addLog(`ERROR: 请求参数错误`);
+          alert(msg || "图片格式或参数有误，请使用清晰的人物正面照，文件大小不超过 10MB。");
+        } else if (resp.status === 503 || resp.status === 502) {
           addLog(`ERROR: AI 服务繁忙，请稍后重试`);
           alert("AI 服务器当前请求繁忙，请稍等片刻后重试。");
         } else {
           addLog(`ERROR: ${msg}`);
-          alert(`生成失败，请稍后重试。`);
+          alert(msg || `生成失败（错误码：${resp.status}），请稍后重试。`);
         }
         setIsGenerating(false);
         return;
@@ -772,20 +781,25 @@ function App() {
               </div>
               <div className="flex gap-1.5 mt-1 opacity-60 group-hover:opacity-100 transition-opacity">
                 {res.videoUrl ? (
-                  <a
-                    href={res.videoUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex-1 bg-black/30 hover:bg-blue-500 hover:text-white text-[10px] py-1.5 rounded text-gray-400 transition-colors flex items-center justify-center gap-1.5 border border-white/5"
-                  >
-                    <Download size={10} /> {t.download}
-                  </a>
+                  <>
+                    <a
+                      href={res.videoUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-1 bg-black/30 hover:bg-blue-500 hover:text-white text-[10px] py-1.5 rounded text-gray-400 transition-colors flex items-center justify-center gap-1.5 border border-white/5"
+                    >
+                      <Download size={10} /> {t.download}
+                    </a>
+                  </>
                 ) : (
                   <button className="flex-1 bg-black/30 text-[10px] py-1.5 rounded text-gray-600 border border-white/5 cursor-not-allowed">
                     Processing...
                   </button>
                 )}
               </div>
+              {res.videoUrl && (
+                <p className="text-[9px] text-yellow-500/70 text-center mt-1">{t.downloadWarning}</p>
+              )}
             </div>
           ))}
         </div>
@@ -807,6 +821,9 @@ function App() {
               </div>
               <h3 className="text-xl font-medium text-zinc-200 mb-2 tracking-tight">{t.uploadTitle}</h3>
               <p className="text-sm text-zinc-500">{t.uploadDesc}</p>
+              <div className="mt-4 px-4 py-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                <p className="text-xs text-blue-300 leading-relaxed">{t.uploadTip}</p>
+              </div>
             </motion.div>
           ) : (
             <div className="preview-container aspect-auto max-w-[80%] max-h-[90%] relative group">
@@ -895,6 +912,9 @@ function App() {
               </button>
             ))}
           </div>
+          <p className="text-xs text-zinc-500 mt-2">
+            {lang === 'zh' ? '⚠️ 图片将自动裁剪以匹配所选比例' : '⚠️ Image will be auto-cropped to match selected ratio'}
+          </p>
         </div>
 
         {/* Action Selection */}
@@ -969,6 +989,9 @@ function App() {
             {isGenerating ? t.generating : `${t.generate} (-50 pts)`}
           </span>
         </button>
+
+        {/* Warning */}
+        <p className="text-[10px] text-yellow-500/80 text-center mt-2 leading-relaxed">{t.generateWarning}</p>
 
       </aside>
 
