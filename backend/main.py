@@ -87,6 +87,28 @@ os.makedirs(TASKS_DIR, exist_ok=True)
 # NOTE: Do not persist user bearer tokens to disk.
 tasks: dict = {}
 
+# Polling backoff config (client-side polling can be aggressive; we suggest interval to client)
+POLL_FAST_SECONDS = int(os.getenv("POLL_FAST_SECONDS", "30"))
+POLL_FAST_INTERVAL_MS = int(os.getenv("POLL_FAST_INTERVAL_MS", "5000"))
+POLL_SLOW_INTERVAL_MS = int(os.getenv("POLL_SLOW_INTERVAL_MS", "12000"))
+
+# FAILURE retry classification
+RETRIABLE_FAILURE_PATTERNS = [
+    re.compile(r"overload|overloaded|capacity|busy|rate|429|timeout|temporar", re.I),
+]
+NON_RETRIABLE_FAILURE_PATTERNS = [
+    re.compile(r"policy|content|unsafe|violate|copyright|invalid|parameter|format", re.I),
+]
+
+def is_retriable_failure(msg: str) -> bool:
+    m = (msg or "").strip()
+    if not m:
+        return False
+    if any(p.search(m) for p in NON_RETRIABLE_FAILURE_PATTERNS):
+        return False
+    return any(p.search(m) for p in RETRIABLE_FAILURE_PATTERNS)
+
+
 def save_task(task_id: str, task_data: dict):
     """保存任务到文件"""
     try:
@@ -397,10 +419,15 @@ async def get_status(task_id: str):
         else:
             raise HTTPException(status_code=404, detail="Task not found")
 
+    # Suggest a polling interval to clients (reduce upstream pressure over time)
+    created_at = float(task.get("created_at") or time.time())
+    age = max(0.0, time.time() - created_at)
+    poll_ms = POLL_FAST_INTERVAL_MS if age <= POLL_FAST_SECONDS else POLL_SLOW_INTERVAL_MS
+
     if task["status"] == "completed":
-        return {"status": "completed", "video_url": task["video_url"]}
+        return {"status": "completed", "video_url": task["video_url"], "poll_ms": poll_ms}
     if task["status"] == "failed":
-        return {"status": "failed", "error": task["error"]}
+        return {"status": "failed", "error": task["error"], "poll_ms": poll_ms}
 
     provider = task.get("provider", "sora2")
 
@@ -438,7 +465,7 @@ async def get_status(task_id: str):
                                 task["status"] = "failed"
                                 task["error"] = f"视频下载失败（HTTP {v.status_code}），请重试"
                                 save_task(task_id, task)
-                                return {"status": "failed", "error": task["error"]}
+                                return {"status": "failed", "error": task["error"], "poll_ms": poll_ms}
 
                             output_filename = f"{task_id}.mp4"
                             output_path = os.path.join(OUTPUT_DIR, output_filename)
@@ -550,13 +577,15 @@ async def get_status(task_id: str):
 
             elif raw_status == "FAILURE":
                 err_msg = data.get("fail_reason") or data.get("message") or data.get("error") or "Generation failed"
-                retry_count = task.get("retry_count", 0)
+                retry_count = int(task.get("retry_count", 0) or 0)
                 stored_payload = task.get("payload")
 
-                # 还有 key 可以换，自动重试
-                if stored_payload and retry_count < len(SORA2_API_KEYS) - 1:
+                # Only auto-retry when failure reason looks transient (overload/capacity/rate-limit)
+                can_retry = stored_payload and is_retriable_failure(err_msg) and retry_count < (len(SORA2_API_KEYS) - 1)
+
+                if can_retry:
                     new_key = get_next_key()
-                    print(f"[Retry] FAILURE, retry {retry_count + 1}/{len(SORA2_API_KEYS) - 1} with key ...{new_key[-6:]}")
+                    print(f"[Retry] FAILURE(retriable), retry {retry_count + 1}/{len(SORA2_API_KEYS) - 1} with key ...{new_key[-6:]} | reason={err_msg}")
                     try:
                         retry_headers = {
                             "Authorization": f"Bearer {new_key}",
@@ -573,15 +602,15 @@ async def get_status(task_id: str):
                             task["sora2_task_id"] = new_task_id
                             task["retry_count"] = retry_count + 1
                             save_task(task_id, task)
-                            return {"status": "processing"}
+                            return {"status": "processing", "poll_ms": poll_ms}
                     except Exception as re:
                         print(f"[Retry] Re-submit failed: {re}")
 
-                # 重试全部耗尽，标记失败
+                # Non-retriable failures should not be retried.
                 task["status"] = "failed"
                 task["error"] = err_msg
                 save_task(task_id, task)
-                return {"status": "failed", "error": err_msg}
+                return {"status": "failed", "error": err_msg, "poll_ms": poll_ms}
 
             else:
                 # NOT_START 或 IN_PROGRESS
