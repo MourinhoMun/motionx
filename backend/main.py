@@ -6,6 +6,7 @@ import shutil
 import os
 import uuid
 import asyncio
+import re
 import time
 import httpx
 import base64
