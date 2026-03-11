@@ -681,7 +681,7 @@ function App() {
       }
 
       addLog(`Task submitted! ID: ${data.task_id}`);
-      addLog("Waiting for Yunwu to generate video (may take 1-5 minutes)...");
+      addLog("视频正在生成中，通常需要 3-8 分钟（高峰期可能更久）。请不要退出或刷新这个页面，可以把浏览器最小化，生成完成后会自动显示下载链接。");
 
       pollStatus(data.task_id, image);
 
