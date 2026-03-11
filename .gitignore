@@ -5,10 +5,13 @@ backend/tasks/
 backend/__pycache__/
 backend/*.bak*
 
-# accidental scratch files
-backend/,*
+# runtime dirs created at repo root (older deployments)
+uploads/
 outputs/
 tasks/
+
+# accidental scratch files
+backend/,*
 
 # node
 node_modules/
