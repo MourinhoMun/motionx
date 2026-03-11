@@ -14,11 +14,41 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Sora-2 API 配置
-SORA2_API_KEY = os.getenv("SORA2_API_KEY", "sk-m7A6Fj53NSSiJTyAUKc3THjw716nDcaa0wCypPHS4orweCnt")
-SORA2_BASE_URL = "https://api.bltcy.ai"
+# Video generation provider configuration
+# Primary: Yunwu (Sora-2 I2V)
+# Fallback: SiliconFlow (Wan2.2 I2V) when the primary request fails.
+def _parse_key_list(env_value: str) -> list[str]:
+    return [k.strip() for k in (env_value or "").split(",") if k.strip()]
+
+# Primary provider keys (comma-separated). Example:
+# SORA2_API_KEYS=sk1,sk2,sk3
+SORA2_API_KEYS = _parse_key_list(os.getenv("SORA2_API_KEYS", ""))
+if not SORA2_API_KEYS:
+    # Back-compat: allow single key env var
+    single = os.getenv("SORA2_API_KEY", "").strip()
+    if single:
+        SORA2_API_KEYS = [single]
+
+if not SORA2_API_KEYS:
+    raise RuntimeError("SORA2_API_KEYS (or SORA2_API_KEY) is required")
+
+SORA2_BASE_URL = os.getenv("SORA2_BASE_URL", "https://api.bltcy.ai")
 SORA2_SUBMIT_URL = f"{SORA2_BASE_URL}/v2/videos/generations"
-SORA2_MODEL = "sora-2"  # 图片生成视频模型
+SORA2_MODEL = os.getenv("SORA2_MODEL", "sora-2")  # primary image-to-video model
+
+# SiliconFlow fallback (keep secrets in env vars, not in code)
+SILICONFLOW_BASE_URL = os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn")
+SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY", "")
+SILICONFLOW_MODEL = os.getenv("SILICONFLOW_MODEL", "Wan-AI/Wan2.2-I2V-A14B")
+
+_key_index = 0
+
+def get_next_key() -> str:
+    """Round-robin next primary API key."""
+    global _key_index
+    key = SORA2_API_KEYS[_key_index % len(SORA2_API_KEYS)]
+    _key_index += 1
+    return key
 
 LICENSE_BACKEND_URL = os.getenv("LICENSE_BACKEND_URL", "https://pengip.com")
 SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "https://pengip.com")
@@ -26,12 +56,17 @@ GENERATE_COST = 50  # 保持 50 积分
 
 app = FastAPI()
 
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+if not ALLOWED_ORIGINS:
+    # Dev-friendly default; production should set ALLOWED_ORIGINS explicitly.
+    ALLOWED_ORIGINS = ["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
 
 UPLOAD_DIR = "uploads"
@@ -41,10 +76,11 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(TASKS_DIR, exist_ok=True)
 
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
-app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
+# Do not expose uploads/outputs as unauthenticated static directories in SaaS mode.
+# Serve files via authenticated endpoints instead.
 
-# In-memory task store: task_id -> {sora2_task_id, status, video_url, error}
+# In-memory task store (also persisted to disk for restart recovery).
+# NOTE: Do not persist user bearer tokens to disk.
 tasks: dict = {}
 
 def save_task(task_id: str, task_data: dict):
@@ -182,7 +218,7 @@ async def generate_video(
     public_image_url = f"{SERVER_BASE_URL}/motionx-uploads/{filename}"
     print(f"[OK] Image saved → {public_image_url}")
 
-    # Sora-2 API payload（使用图片 URL）
+    # Primary provider payload (Yunwu / Sora-2) uses image URL
     payload = {
         "model": SORA2_MODEL,
         "prompt": prompt,
@@ -194,69 +230,150 @@ async def generate_video(
         "private": True,
     }
     headers = {
-        "Authorization": f"Bearer {SORA2_API_KEY}",
         "Content-Type": "application/json",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/json",
         "Accept-Language": "en-US,en;q=0.9",
     }
 
-    print(f"[API] Calling Sora-2 I2V: {payload}")
+    api_key = get_next_key()
+    print(f"[API] Calling Sora-2 I2V with key ...{api_key[-6:]}: {payload}")
 
-    async def call_sora2():
+    async def call_sora2(key: str):
+        hdrs = {**headers, "Authorization": f"Bearer {key}"}
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(SORA2_SUBMIT_URL, headers=headers, json=payload)
+            resp = await client.post(SORA2_SUBMIT_URL, headers=hdrs, json=payload)
             api_data = resp.json()
             print(f"[API] Sora-2 response ({resp.status_code}): {api_data}")
             return resp.status_code, api_data
 
-    try:
-        status_code, api_data = await call_sora2()
+    async def call_siliconflow():
+        """Fallback provider: SiliconFlow Wan2.2 I2V.
 
-        # 自动重试逻辑
+        Note: request/response schema may differ from Yunwu; this function keeps the
+        integration isolated so we can adjust in one place if SiliconFlow changes.
+        """
+        if not SILICONFLOW_API_KEY:
+            return 0, {"error": "SILICONFLOW_API_KEY not configured"}
+
+        submit_url = SILICONFLOW_BASE_URL.rstrip("/") + "/v1/video/submit"
+
+        # SiliconFlow I2V requires `image` (URL or base64). We prefer URL to keep payload small.
+        sf_payload = {
+            "model": SILICONFLOW_MODEL,
+            "prompt": prompt,
+            "image_size": "1280x720" if aspect_ratio == "16:9" else "720x1280" if aspect_ratio == "9:16" else "960x960",
+            "image": public_image_url,
+        }
+
+        sf_headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {SILICONFLOW_API_KEY}",
+            "Accept": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(submit_url, headers=sf_headers, json=sf_payload)
+            try:
+                data = resp.json()
+            except Exception:
+                data = {"error": resp.text[:2000]}
+            print(f"[API] SiliconFlow response ({resp.status_code}): {data}")
+            return resp.status_code, data
+
+    try:
+        status_code, api_data = await call_sora2(api_key)
+
+        # Automatic retry (HTTP 5xx) by rotating primary keys
         MAX_RETRIES = 3
         RETRY_INTERVAL = 10
         retry_count = 0
         while status_code >= 500 and retry_count < MAX_RETRIES:
             retry_count += 1
-            print(f"[API] Sora-2 error, retry {retry_count}/{MAX_RETRIES} in {RETRY_INTERVAL}s...")
+            api_key = get_next_key()
+            print(f"[API] Sora-2 error, retry {retry_count}/{MAX_RETRIES} with key ...{api_key[-6:]}...")
             await asyncio.sleep(RETRY_INTERVAL)
-            status_code, api_data = await call_sora2()
+            status_code, api_data = await call_sora2(api_key)
 
+        # If primary fails, fallback to SiliconFlow
+        provider = "sora2"
         if status_code != 200:
-            err_msg = api_data.get("error", api_data.get("message", ""))
-            # 针对 400 错误提供更友好的提示
-            if status_code == 400:
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"请求参数有误，请检查上传的图片格式和大小。建议：使用清晰的人物正面照，文件大小不超过 10MB。（{err_msg}）"
-                )
-            raise HTTPException(status_code=502, detail=f"生成服务暂时不可用，请稍后重试。（{err_msg}）")
+            print(f"[Fallback] Primary failed (HTTP {status_code}), trying SiliconFlow...")
+            sf_status, sf_data = await call_siliconflow()
+            provider = "siliconflow"
 
-        # 提取任务 ID（Sora-2 返回 task_id）
-        task_id = api_data.get("task_id")
-        if not task_id:
-            raise HTTPException(status_code=502, detail=f"No task_id in Sora-2 response: {api_data}")
+            if sf_status != 200:
+                err_msg = api_data.get("error", api_data.get("message", ""))
+                sf_err = sf_data.get("error", sf_data.get("message", "")) if isinstance(sf_data, dict) else str(sf_data)
+                if status_code == 400:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"请求参数有误，请检查上传的图片格式和大小。建议：使用清晰的人物正面照，文件大小不超过 10MB。（{err_msg}）",
+                    )
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"生成服务暂时不可用，请稍后重试。（primary: {err_msg}；fallback: {sf_err}）",
+                )
+
+            api_data = sf_data
+
+        if provider == "sora2":
+            # Sora-2 returns task_id and needs polling
+            task_id = api_data.get("task_id")
+            if not task_id:
+                raise HTTPException(status_code=502, detail=f"No task_id in Sora-2 response: {api_data}")
+        else:
+            # SiliconFlow returns requestId
+            if not isinstance(api_data, dict):
+                raise HTTPException(status_code=502, detail=f"Unexpected SiliconFlow response: {api_data}")
+            task_id = api_data.get("requestId")
+            if not task_id:
+                raise HTTPException(status_code=502, detail=f"No requestId in SiliconFlow response: {api_data}")
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Sora-2 connection error: {e}")
+        raise HTTPException(status_code=502, detail=f"Video provider connection error: {e}")
 
-    # 持久化任务状态（保存 token 用于成功后扣费）
+    # 持久化任务状态（保存 token 用于成功后扣费，保存 payload 用于 FAILURE 重试）
+    # Persist task state
     tasks[file_id] = {
-        "sora2_task_id": task_id,
+        "provider": provider,
+        "provider_task_id": task_id,
         "status": "processing",
         "video_url": None,
         "error": None,
         "created_at": time.time(),
-        "token": token,  # 保存 token，成功后才扣费
-        "credits_deducted": False,  # 标记是否已扣费
+        # Do NOT persist bearer token. Keep it only in-memory for best-effort charging.
+        "token_in_memory": token,
+        "credits_deducted": False,
+        "retry_count": 0,       # primary FAILURE retries
+        "payload": payload,     # original request body for re-submit (primary)
     }
-    save_task(file_id, tasks[file_id])
 
-    # 不再立即扣费，改为成功后才扣
-    return {"status": "processing", "task_id": file_id}
+    # Persist a redacted version (no bearer tokens)
+    to_save = dict(tasks[file_id])
+    to_save.pop("token_in_memory", None)
+    save_task(file_id, to_save)
+
+    # Charge only after successful download in status polling.
+    return {"status": tasks[file_id]["status"], "task_id": file_id}
+
+
+# ── Authenticated file endpoints ───────────────────────────────────────────────
+
+@app.get("/api/outputs/{filename}")
+async def download_output(filename: str, request: Request):
+    token = request.headers.get("Authorization")
+    await check_balance(token)  # basic auth gate; does not deduct
+
+    file_path = os.path.join(OUTPUT_DIR, filename)
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Stream file
+    from fastapi.responses import FileResponse
+    return FileResponse(file_path, media_type="video/mp4")
 
 
 # ── Status polling endpoint ────────────────────────────────────────────────────
@@ -277,11 +394,87 @@ async def get_status(task_id: str):
     if task["status"] == "failed":
         return {"status": "failed", "error": task["error"]}
 
-    # Poll Sora-2（使用 GET 方法）
-    sora2_task_id = task["sora2_task_id"]
+    provider = task.get("provider", "sora2")
+
+    if provider != "sora2":
+        # SiliconFlow polling
+        request_id = task.get("provider_task_id")
+        if not request_id:
+            return {"status": "failed", "error": "Missing provider_task_id"}
+
+        status_url = SILICONFLOW_BASE_URL.rstrip("/") + "/v1/video/status"
+        sf_headers = {
+            "Authorization": f"Bearer {SILICONFLOW_API_KEY}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(status_url, headers=sf_headers, json={"requestId": request_id})
+                data = resp.json()
+                print(f"[Status] SiliconFlow {request_id}: {data}")
+
+                raw_status = (data.get("status") or "").upper()
+                if raw_status == "SUCCEED":
+                    videos = ((data.get("results") or {}).get("videos") or [])
+                    video_url = (videos[0] or {}).get("url") if videos else None
+                    if not video_url:
+                        return {"status": "processing"}
+
+                    # Download to local for stable URL
+                    try:
+                        print(f"[Download] Downloading video from: {video_url[:100]}...")
+                        async with httpx.AsyncClient(timeout=60.0) as dl:
+                            v = await dl.get(video_url)
+                            if v.status_code != 200:
+                                task["status"] = "failed"
+                                task["error"] = f"视频下载失败（HTTP {v.status_code}），请重试"
+                                save_task(task_id, task)
+                                return {"status": "failed", "error": task["error"]}
+
+                            output_filename = f"{task_id}.mp4"
+                            output_path = os.path.join(OUTPUT_DIR, output_filename)
+                            with open(output_path, "wb") as f:
+                                f.write(v.content)
+
+                        local_video_url = f"{SERVER_BASE_URL}/motionx/api/outputs/{output_filename}"
+                        task["status"] = "completed"
+                        task["video_url"] = local_video_url
+                        save_task(task_id, task)
+
+                        if not task.get("credits_deducted", False):
+                            token = task.get("token_in_memory")
+                            if token:
+                                asyncio.create_task(deduct_license(token))
+                                task["credits_deducted"] = True
+                                print("[Credits] Deducting 50 credits for successful video generation")
+
+                        return {"status": "completed", "video_url": local_video_url}
+                    except Exception as e:
+                        task["status"] = "failed"
+                        task["error"] = f"视频下载异常：{str(e)}"
+                        save_task(task_id, task)
+                        return {"status": "failed", "error": task["error"]}
+
+                if raw_status in {"FAILED", "FAIL", "ERROR"}:
+                    reason = data.get("reason") or "Generation failed"
+                    task["status"] = "failed"
+                    task["error"] = reason
+                    save_task(task_id, task)
+                    return {"status": "failed", "error": reason}
+
+                return {"status": "processing", "provider_status": raw_status}
+        except Exception as e:
+            print(f"[Status] SiliconFlow poll error: {e}")
+            return {"status": "processing"}
+
+    # Poll Sora-2 (GET)
+    sora2_task_id = task.get("provider_task_id") or task.get("sora2_task_id")
     status_url = f"{SORA2_BASE_URL}/v2/videos/generations/{sora2_task_id}"
+    # Status query uses any primary key
+    status_key = get_next_key()
     headers = {
-        "Authorization": f"Bearer {SORA2_API_KEY}",
+        "Authorization": f"Bearer {status_key}",
         "Content-Type": "application/json",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/json",
@@ -313,7 +506,7 @@ async def get_status(task_id: str):
                                     f.write(video_resp.content)
 
                                 # 返回我们服务器上的 URL（注意是 motionx-outputs 不是 motionx/outputs）
-                                local_video_url = f"{SERVER_BASE_URL}/motionx-outputs/{output_filename}"
+                                local_video_url = f"{SERVER_BASE_URL}/motionx/api/outputs/{output_filename}"
                                 print(f"[Download] Video saved to: {local_video_url}")
 
                                 task["status"] = "completed"
@@ -322,7 +515,7 @@ async def get_status(task_id: str):
 
                                 # 视频生成成功且下载成功，扣除积分（只扣一次）
                                 if not task.get("credits_deducted", False):
-                                    token = task.get("token")
+                                    token = task.get("token_in_memory")
                                     if token:
                                         asyncio.create_task(deduct_license(token))
                                         task["credits_deducted"] = True
@@ -349,6 +542,34 @@ async def get_status(task_id: str):
 
             elif raw_status == "FAILURE":
                 err_msg = data.get("fail_reason") or data.get("message") or data.get("error") or "Generation failed"
+                retry_count = task.get("retry_count", 0)
+                stored_payload = task.get("payload")
+
+                # 还有 key 可以换，自动重试
+                if stored_payload and retry_count < len(SORA2_API_KEYS) - 1:
+                    new_key = get_next_key()
+                    print(f"[Retry] FAILURE, retry {retry_count + 1}/{len(SORA2_API_KEYS) - 1} with key ...{new_key[-6:]}")
+                    try:
+                        retry_headers = {
+                            "Authorization": f"Bearer {new_key}",
+                            "Content-Type": "application/json",
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                            "Accept": "application/json",
+                        }
+                        async with httpx.AsyncClient(timeout=30.0) as retry_client:
+                            retry_resp = await retry_client.post(SORA2_SUBMIT_URL, headers=retry_headers, json=stored_payload)
+                            retry_data = retry_resp.json()
+                            print(f"[Retry] Sora-2 re-submit response ({retry_resp.status_code}): {retry_data}")
+                            new_task_id = retry_data.get("task_id")
+                        if new_task_id:
+                            task["sora2_task_id"] = new_task_id
+                            task["retry_count"] = retry_count + 1
+                            save_task(task_id, task)
+                            return {"status": "processing"}
+                    except Exception as re:
+                        print(f"[Retry] Re-submit failed: {re}")
+
+                # 重试全部耗尽，标记失败
                 task["status"] = "failed"
                 task["error"] = err_msg
                 save_task(task_id, task)
