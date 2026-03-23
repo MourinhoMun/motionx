@@ -2,6 +2,10 @@
 backend/uploads/
 backend/outputs/
 backend/tasks/
+# In some deployments these are symlinks, not directories.
+backend/uploads
+backend/outputs
+backend/tasks
 backend/__pycache__/
 backend/*.bak*
 

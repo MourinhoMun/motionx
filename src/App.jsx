@@ -352,7 +352,7 @@ function ActivationGate({ lang, onActivated }) {
         localStorage.setItem(TOKEN_KEY, data.token);
         onActivated(data.token, data.user?.balance ?? data.balance ?? 0);
       } else {
-        setError('服务器未返回 token，请联系鹏哥');
+        setError('服务器未返回 token，请稍后重试');
       }
     } catch (e) {
       setError('网络错误，请稍后重试');
@@ -417,9 +417,7 @@ function ActivationGate({ lang, onActivated }) {
         </button>
 
         <div className="mt-4 p-3 bg-zinc-800 rounded-lg text-center">
-          <p className="text-xs text-zinc-400">
-            请联系鹏哥微信：<span className="font-semibold text-blue-400">Peng_IP</span> 购买年卡或者获得7天试用
-          </p>
+          <p className="text-xs text-zinc-400">没有账号？立即注册</p>
         </div>
       </motion.div>
     </div>
@@ -466,7 +464,24 @@ function App() {
   const [customActionValues, setCustomActionValues] = useState({});
   const [aspectRatio, setAspectRatio] = useState("9:16");
   const [isGenerating, setIsGenerating] = useState(false);
-  const [results, setResults] = useState([]);
+  const HISTORY_KEY = 'motionx_history';
+  const [results, setResults] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+    } catch { return []; }
+  });
+
+  // Persist results to localStorage whenever they change
+  useEffect(() => {
+    try {
+      // blob: URLs are page-session only — replace with null before saving
+      const toSave = results.map(r => ({
+        ...r,
+        src: r.src && !r.src.startsWith('blob:') ? r.src : null,
+      }));
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(toSave));
+    } catch {}
+  }, [results]);
 
   const [customPrompt, setCustomPrompt] = useState("");
   const [logs, setLogs] = useState([]);
@@ -496,8 +511,10 @@ function App() {
 
   const handleLogout = () => {
     localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(HISTORY_KEY);
     setToken('');
     setBalance(null);
+    setResults([]);
   };
 
   // Prompt builder — Veo3 structured natural language
@@ -545,6 +562,8 @@ function App() {
     } else {
       parts.push("Camera: Static, no camera movement.");
     }
+
+    parts.push("Constraints: Do not introduce any additional actions beyond the ones explicitly listed above. No extra gestures, no extra head/body motions, and no added camera movement unless specified.");
 
     parts.push("The motion is smooth, organic, and lifelike. Avoid: face morphing, identity change, background drift, flickering, jump cuts, or any distortion.");
 
@@ -767,7 +786,13 @@ function App() {
             <div key={res.id} className="bg-zinc-800/40 rounded-lg p-2.5 flex flex-col gap-2 hover:bg-zinc-800 transition-colors border border-white/5 group">
               <div className="flex items-center gap-3">
                 <div className="relative w-12 h-12 rounded-md overflow-hidden bg-black aspect-square">
-                  <img src={res.src} className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
+                  {res.src ? (
+                    <img src={res.src} className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center bg-zinc-900">
+                      <Film size={18} className="text-zinc-600" />
+                    </div>
+                  )}
                   <div className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-transparent">
                     <Play size={16} className="text-white drop-shadow-md" fill="white" />
                   </div>
